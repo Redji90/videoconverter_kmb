@@ -15,9 +15,12 @@
 # Перейдите в папку backend
 cd backend
 
-# Создайте виртуальное окружение (Windows)
+# Создайте виртуальное окружение (Windows PowerShell)
 py -m venv venv
-.\venv\Scripts\activate
+.\venv\Scripts\Activate.ps1
+
+# Или для Windows CMD
+.\venv\Scripts\activate.bat
 
 # Или для Linux/Mac
 python3 -m venv venv

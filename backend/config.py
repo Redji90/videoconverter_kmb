@@ -7,7 +7,7 @@ from typing import Optional
 
 # Путь к кэшу моделей Whisper
 # Можно установить через переменную окружения WHISPER_CACHE_DIR
-# По умолчанию: /app/models (для Docker) или E:\whisper-models (для Windows)
+# Приоритет: переменная окружения > /app/models (Docker/Spaces) > E:\whisper-models (Windows) > системный кэш
 WHISPER_CACHE_DIR: Optional[str] = os.getenv(
     "WHISPER_CACHE_DIR",
     "/app/models" if os.path.exists("/app") else (
@@ -17,7 +17,7 @@ WHISPER_CACHE_DIR: Optional[str] = os.getenv(
 
 # Путь к кэшу HuggingFace (для моделей diarization)
 # WhisperX использует модели из HuggingFace
-# По умолчанию: /app/huggingface-cache (для Docker) или E:\models\huggingface (для Windows)
+# Приоритет: переменная окружения > /app/huggingface-cache (Docker/Spaces) > E:\models\huggingface (Windows) > системный кэш
 HF_HOME: Optional[str] = os.getenv(
     "HF_HOME",
     "/app/huggingface-cache" if os.path.exists("/app") else (

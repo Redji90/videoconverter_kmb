@@ -218,7 +218,8 @@ class OptimizedSpeechRecognitionService:
         beam_size: int = 5,
         best_of: int = 5,
         enable_diarization: bool = False,
-        num_speakers: Optional[int] = None
+        num_speakers: Optional[int] = None,
+        speaker_names: Optional[List[str]] = None
     ) -> Dict:
         """
         Распознает речь с опциональным разделением по ролям
@@ -240,7 +241,7 @@ class OptimizedSpeechRecognitionService:
             if WHISPERX_AVAILABLE:
                 try:
                     return self._transcribe_with_diarization(
-                        audio_path, language, model, num_speakers
+                        audio_path, language, model, num_speakers, speaker_names
                     )
                 except Exception as e:
                     print(f"⚠️  WhisperX diarization не удалось: {e}")
@@ -249,7 +250,7 @@ class OptimizedSpeechRecognitionService:
                     if SIMPLE_DIARIZATION_AVAILABLE:
                         try:
                             return self._transcribe_with_simple_diarization(
-                                audio_path, language, model, beam_size, best_of
+                                audio_path, language, model, beam_size, best_of, speaker_names
                             )
                         except Exception as e2:
                             print(f"❌ Простая diarization также не удалась: {e2}")
@@ -261,7 +262,7 @@ class OptimizedSpeechRecognitionService:
                 # Используем простую diarization, если WhisperX не установлен
                 try:
                     return self._transcribe_with_simple_diarization(
-                        audio_path, language, model, beam_size, best_of
+                        audio_path, language, model, beam_size, best_of, speaker_names
                     )
                 except Exception as e:
                     print(f"❌ Простая diarization не удалась: {e}")
@@ -330,7 +331,8 @@ class OptimizedSpeechRecognitionService:
         audio_path: str,
         language: Optional[str],
         model: str,
-        num_speakers: Optional[int]
+        num_speakers: Optional[int],
+        speaker_names: Optional[List[str]] = None
     ) -> Dict:
         """Транскрипция с разделением по ролям (требует WhisperX)"""
         if not WHISPERX_AVAILABLE:
@@ -351,34 +353,63 @@ class OptimizedSpeechRecognitionService:
             os.environ["WHISPER_CACHE_DIR"] = str(self.cache_dir)
             print(f"Используется WHISPER_CACHE_DIR для WhisperX: {self.cache_dir}")
         
-        # Загружаем модель через WhisperX (возвращает Faster-Whisper модель)
-        # Примечание: WhisperX может загружать модель заново, если не найдет в нужном формате
-        # Это нормально при первом использовании diarization
-        print(f"Загрузка модели Whisper через WhisperX: {model} (устройство: {device})")
-        whisper_model = whisperx.load_model(
-            model, 
-            device, 
-            compute_type="float16" if device == "cuda" else "int8",
-            download_root=str(self.cache_dir) if self.cache_dir else None
-        )
-        print(f"Модель Whisper {model} загружена через WhisperX")
+        # Используем Faster-Whisper для транскрипции (более надежно)
+        # Затем применяем pyannote.audio для diarization
+        print(f"Загрузка модели Whisper: {model} (устройство: {device})")
         
-        # Загрузка аудио
-        audio = whisperx.load_audio(audio_path)
+        # Загружаем модель через Faster-Whisper напрямую
+        if FASTER_WHISPER_AVAILABLE:
+            from faster_whisper import WhisperModel
+            download_path = str(self.cache_dir) if self.cache_dir else None
+            whisper_model = WhisperModel(
+                model,
+                device=device,
+                compute_type="int8" if device == "cpu" else "float16",
+                download_root=download_path
+            )
+            print(f"Модель Whisper {model} загружена через Faster-Whisper")
+            
+            # Транскрипция
+            print("Выполняется транскрипция...")
+            segments, info = whisper_model.transcribe(
+                audio_path,
+                language=language,
+                beam_size=5,
+                vad_filter=True,
+                vad_parameters=dict(min_silence_duration_ms=500)
+            )
+            
+            # Конвертация в нужный формат
+            segments_list = []
+            for segment in segments:
+                segments_list.append({
+                    "start": segment.start,
+                    "end": segment.end,
+                    "text": segment.text.strip()
+                })
+            
+            result = {
+                "language": info.language,
+                "segments": segments_list
+            }
+        else:
+            # Fallback на стандартный Whisper
+            import whisper
+            whisper_model = whisper.load_model(model)
+            result = whisper_model.transcribe(audio_path, language=language)
+            result = {
+                "language": result.get("language", "unknown"),
+                "segments": [
+                    {
+                        "start": seg.get("start", 0),
+                        "end": seg.get("end", 0),
+                        "text": seg.get("text", "").strip()
+                    }
+                    for seg in result.get("segments", [])
+                ]
+            }
         
-        # Транскрипция через Faster-Whisper модель (whisper_model.transcribe, а не whisperx.transcribe)
-        print("Выполняется транскрипция...")
-        result = whisper_model.transcribe(audio, language=language)
-        
-        # WhisperX требует дополнительного выравнивания для точного присваивания слов
-        # Загружаем модель выравнивания
-        try:
-            print("Выполняется выравнивание слов...")
-            model_a, metadata = whisperx.load_align_model(language_code=result.get("language", "ru"), device=device)
-            result = whisperx.align(result["segments"], model_a, metadata, audio, device, return_char_alignments=False)
-        except Exception as align_error:
-            print(f"⚠️  Ошибка при выравнивании: {align_error}")
-            print("Продолжаем без выравнивания...")
+        print(f"✓ Транскрипция завершена: {len(result['segments'])} сегментов")
         
         # Diarization (разделение по ролям)
         # Используем HF_HOME для сохранения модели на диск E
@@ -390,38 +421,75 @@ class OptimizedSpeechRecognitionService:
         hf_token = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_TOKEN")
         
         # Получаем путь к моделям HuggingFace
-        hf_home = os.getenv("HF_HOME", "E:\\models\\huggingface")
+        hf_home = os.getenv("HF_HOME", "/app/huggingface-cache")
         
-        # Загрузка модели diarization через pyannote (используем реальную модель, не ручное сопоставление)
-        # Модели находятся в E:\models\huggingface
+        # Загрузка модели diarization через pyannote
+        # ВАЖНО: Модель требует токен Hugging Face и принятия условий использования
+        # Получить токен: https://huggingface.co/settings/tokens
+        # Принять условия: https://hf.co/pyannote/speaker-diarization-3.1
         try:
             # Пробуем использовать WhisperX.DiarizationPipeline, если доступен
             if hasattr(whisperx, 'DiarizationPipeline'):
                 print("Используется WhisperX.DiarizationPipeline...")
+                if not hf_token:
+                    print("⚠️  Токен Hugging Face не указан (HF_TOKEN или HUGGINGFACE_TOKEN)")
+                    print("   Для использования WhisperX diarization нужен токен.")
+                    print("   Получите токен: https://huggingface.co/settings/tokens")
+                    print("   Примите условия: https://hf.co/pyannote/speaker-diarization-3.1")
+                    print("   Добавьте токен в настройки Spaces как секретную переменную HF_TOKEN")
+                    raise ValueError("HF_TOKEN не указан. Требуется для доступа к модели diarization.")
+                
                 diarize_model = whisperx.DiarizationPipeline(
                     use_auth_token=hf_token,
                     device=device
                 )
+                
+                if diarize_model is None:
+                    raise ValueError("Не удалось загрузить модель diarization. Проверьте токен и условия использования.")
+                    
             else:
-                # Используем pyannote.audio напрямую (модели уже скачаны)
+                # Используем pyannote.audio напрямую
                 print("DiarizationPipeline недоступен в whisperx, используем pyannote.audio...")
                 print(f"Путь к моделям: {hf_home}")
+                
+                if not hf_token:
+                    print("⚠️  Токен Hugging Face не указан (HF_TOKEN или HUGGINGFACE_TOKEN)")
+                    print("   Для использования pyannote.audio diarization нужен токен.")
+                    print("   Получите токен: https://huggingface.co/settings/tokens")
+                    print("   Примите условия: https://hf.co/pyannote/speaker-diarization-3.1")
+                    raise ValueError("HF_TOKEN не указан. Требуется для доступа к модели diarization.")
+                
                 from pyannote.audio import Pipeline
                 
-                # Загружаем модель из локального кэша
-                # Pyannote автоматически найдет модели в HF_HOME
+                # Загружаем модель из Hugging Face
                 diarize_model = Pipeline.from_pretrained(
                     "pyannote/speaker-diarization-3.1",
                     use_auth_token=hf_token,
-                    cache_dir=hf_home  # Явно указываем путь к кэшу
+                    cache_dir=hf_home
                 )
+                
+                if diarize_model is None:
+                    raise ValueError("Не удалось загрузить модель diarization. Проверьте токен и условия использования.")
+                
                 if device == "cuda":
                     import torch
                     diarize_model = diarize_model.to(torch.device("cuda"))
                 
-                print("✓ Модель diarization загружена из локального кэша")
+                print("✓ Модель diarization загружена")
         except Exception as diarize_load_error:
-            print(f"❌ Ошибка при загрузке модели diarization: {diarize_load_error}")
+            error_msg = str(diarize_load_error)
+            print(f"❌ Ошибка при загрузке модели diarization: {error_msg}")
+            if "HF_TOKEN" in error_msg or "token" in error_msg.lower() or "NoneType" in error_msg:
+                print("\n" + "="*60)
+                print("РЕШЕНИЕ ПРОБЛЕМЫ:")
+                print("="*60)
+                print("1. Получите токен Hugging Face:")
+                print("   https://huggingface.co/settings/tokens")
+                print("2. Примите условия использования модели:")
+                print("   https://hf.co/pyannote/speaker-diarization-3.1")
+                print("3. Добавьте токен в настройки Spaces:")
+                print("   Settings → Secrets → Добавьте HF_TOKEN")
+                print("="*60 + "\n")
             import traceback
             traceback.print_exc()
             raise
@@ -433,57 +501,221 @@ class OptimizedSpeechRecognitionService:
         print(f"Выполняется diarization... (спикеров: {num_speakers if num_speakers else 'авто'})")
         
         # Определяем, какой тип модели используется
-        is_pyannote_pipeline = hasattr(diarize_model, '__call__') and not hasattr(diarize_model, 'min_speakers')
+        # WhisperX.DiarizationPipeline имеет метод min_speakers/max_speakers
+        # pyannote.audio Pipeline - это просто callable объект
+        is_whisperx_pipeline = hasattr(diarize_model, 'min_speakers') or hasattr(diarize_model, '__class__') and 'DiarizationPipeline' in str(type(diarize_model))
+        is_pyannote_pipeline = not is_whisperx_pipeline and hasattr(diarize_model, '__call__')
         
         if is_pyannote_pipeline:
             # Это pyannote.audio Pipeline - используем правильный API
             print("Используется pyannote.audio Pipeline API...")
             from pyannote.core import Annotation
             
-            # Формируем входные данные для pyannote
-            diarize_input = {"uri": "audio", "audio": audio_path}
-            if num_speakers:
-                diarize_input["num_speakers"] = num_speakers
-            
-            # Выполняем diarization
-            diarization = diarize_model(diarize_input)
-            
-            # Конвертируем результат pyannote в формат для WhisperX
-            # pyannote возвращает Annotation, нужно преобразовать в список сегментов
-            # Формат для whisperx.assign_word_speakers: список словарей с ключами "segment" и "speaker"
-            diarize_segments_list = []
-            for turn, _, speaker in diarization.itertracks(yield_label=True):
-                diarize_segments_list.append({
-                    "segment": {
-                        "start": float(turn.start),
-                        "end": float(turn.end)
-                    },
-                    "speaker": speaker
-                })
-            
-            print(f"✓ Diarization завершена: найдено {len(diarize_segments_list)} сегментов спикеров")
-            
-            # Используем WhisperX assign_word_speakers для точного сопоставления на уровне слов
-            # Это более точный метод, чем ручное сопоставление по временным меткам
             try:
-                print("Объединение транскрипции с diarization через WhisperX...")
-                result = whisperx.assign_word_speakers(diarize_segments_list, result)
-                print("✓ Спикеры успешно присвоены к словам транскрипции")
-            except Exception as assign_error:
-                print(f"⚠️  Ошибка при объединении через WhisperX: {assign_error}")
-                print("Используем ручное присваивание спикеров (менее точное)...")
+                # Формируем входные данные для pyannote
+                # pyannote.audio ожидает словарь с ключом "uri" и "audio" (путь к файлу или массив)
+                diarize_input = {"uri": "audio", "audio": audio_path}
+                if num_speakers:
+                    diarize_input["num_speakers"] = num_speakers
+                
+                # Выполняем diarization
+                print("Выполняется diarization через pyannote.audio...")
+                diarization_result = diarize_model(diarize_input)
+                
+                # Конвертируем результат pyannote в формат для присваивания спикеров
+                # pyannote возвращает Annotation объект
+                diarize_segments_list = []
+                
+                if isinstance(diarization_result, Annotation):
+                    # Это Annotation объект - используем itertracks правильно
+                    # itertracks возвращает (segment, track, label)
+                    try:
+                        for segment, track, speaker in diarization_result.itertracks(yield_label=True):
+                            diarize_segments_list.append({
+                                "segment": {
+                                    "start": float(segment.start),
+                                    "end": float(segment.end)
+                                },
+                                "speaker": str(speaker)  # Убеждаемся, что speaker - строка
+                            })
+                    except Exception as iter_error:
+                        # Если itertracks не работает, пробуем другой способ
+                        print(f"⚠️  Ошибка при итерации через itertracks: {iter_error}")
+                        print("Пробуем альтернативный способ...")
+                        # Используем get_timeline и get_labels
+                        timeline = diarization_result.get_timeline()
+                        for segment in timeline:
+                            labels = diarization_result.get_labels(segment)
+                            speaker = str(list(labels)[0]) if labels else "SPEAKER_00"
+                            diarize_segments_list.append({
+                                "segment": {
+                                    "start": float(segment.start),
+                                    "end": float(segment.end)
+                                },
+                                "speaker": speaker
+                            })
+                elif isinstance(diarization_result, dict):
+                    # Если это словарь (некоторые версии могут возвращать dict)
+                    for seg in diarization_result.get("segments", []):
+                        diarize_segments_list.append({
+                            "segment": {
+                                "start": seg.get("start", 0),
+                                "end": seg.get("end", 0)
+                            },
+                            "speaker": str(seg.get("speaker", "SPEAKER_00"))
+                        })
+                else:
+                    # Пробуем преобразовать в список другим способом
+                    print(f"⚠️  Неожиданный тип результата diarization: {type(diarization_result)}")
+                    # Пробуем использовать get_timeline если доступен
+                    if hasattr(diarization_result, 'get_timeline'):
+                        timeline = diarization_result.get_timeline()
+                        for segment in timeline:
+                            # Пробуем получить спикера для сегмента
+                            labels = diarization_result.get_labels(segment)
+                            speaker = list(labels)[0] if labels else "SPEAKER_00"
+                            diarize_segments_list.append({
+                                "segment": {
+                                    "start": float(segment.start),
+                                    "end": float(segment.end)
+                                },
+                                "speaker": str(speaker)
+                            })
+                    else:
+                        raise ValueError(f"Не удалось обработать результат diarization типа {type(diarization_result)}")
+                
+                print(f"✓ Diarization завершена: найдено {len(diarize_segments_list)} сегментов спикеров")
+                
+                # Объединяем транскрипцию с diarization вручную
+                print("Объединение транскрипции с diarization...")
                 result = self._assign_speakers_manual(result, diarize_segments_list)
+                print("✓ Спикеры успешно присвоены к сегментам транскрипции")
+            except Exception as pyannote_error:
+                error_msg = str(pyannote_error)
+                print(f"❌ Ошибка при выполнении pyannote diarization: {error_msg}")
+                import traceback
+                traceback.print_exc()
+                raise
         else:
             # Это WhisperX DiarizationPipeline - используем стандартный API
             print("Используется WhisperX DiarizationPipeline API...")
-            diarize_segments = diarize_model(
-                audio_path,
-                min_speakers=num_speakers if num_speakers else None,
-                max_speakers=num_speakers if num_speakers else None
-            )
-            
-            # Объединение транскрипции с diarization
-            result = whisperx.assign_word_speakers(diarize_segments, result)
+            try:
+                # WhisperX DiarizationPipeline принимает путь к аудио файлу
+                print(f"Выполняется diarization для файла: {audio_path}")
+                diarize_segments = diarize_model(
+                    audio_path,
+                    min_speakers=num_speakers if num_speakers else None,
+                    max_speakers=num_speakers if num_speakers else None
+                )
+                
+                print(f"Результат diarization: тип={type(diarize_segments)}")
+                if hasattr(diarize_segments, '__len__'):
+                    print(f"  Длина результата: {len(diarize_segments)}")
+                
+                # Конвертируем результат в нужный формат
+                diarize_segments_list = []
+                from pyannote.core import Annotation
+                import pandas as pd
+                
+                if isinstance(diarize_segments, pd.DataFrame):
+                    # WhisperX DiarizationPipeline возвращает pandas DataFrame
+                    print("Результат - pandas DataFrame")
+                    print(f"  Колонки: {list(diarize_segments.columns)}")
+                    print(f"  Первые строки:\n{diarize_segments.head()}")
+                    
+                    # DataFrame обычно содержит колонки: start, end, speaker
+                    for _, row in diarize_segments.iterrows():
+                        diarize_segments_list.append({
+                            "segment": {
+                                "start": float(row.get("start", row.get("start_time", 0))),
+                                "end": float(row.get("end", row.get("end_time", 0)))
+                            },
+                            "speaker": str(row.get("speaker", row.get("label", "SPEAKER_00")))
+                        })
+                    print(f"  Обработано {len(diarize_segments_list)} сегментов из DataFrame")
+                elif isinstance(diarize_segments, dict):
+                    # Если это словарь с ключом "segments"
+                    print("Результат - словарь")
+                    segments = diarize_segments.get("segments", [])
+                    print(f"  Найдено сегментов в словаре: {len(segments)}")
+                    for seg in segments:
+                        diarize_segments_list.append({
+                            "segment": {
+                                "start": seg.get("start", 0),
+                                "end": seg.get("end", 0)
+                            },
+                            "speaker": str(seg.get("speaker", "SPEAKER_00"))
+                        })
+                elif isinstance(diarize_segments, Annotation):
+                    # Если это Annotation объект
+                    print("Результат - Annotation объект")
+                    try:
+                        # Пробуем использовать itertracks
+                        for segment, track, speaker in diarize_segments.itertracks(yield_label=True):
+                            diarize_segments_list.append({
+                                "segment": {
+                                    "start": float(segment.start),
+                                    "end": float(segment.end)
+                                },
+                                "speaker": str(speaker)
+                            })
+                    except Exception as iter_error:
+                        print(f"⚠️  Ошибка при итерации через itertracks: {iter_error}")
+                        # Fallback: используем get_timeline
+                        timeline = diarize_segments.get_timeline()
+                        print(f"  Timeline содержит {len(timeline)} сегментов")
+                        for segment in timeline:
+                            labels = diarize_segments.get_labels(segment)
+                            speaker = str(list(labels)[0]) if labels else "SPEAKER_00"
+                            diarize_segments_list.append({
+                                "segment": {
+                                    "start": float(segment.start),
+                                    "end": float(segment.end)
+                                },
+                                "speaker": speaker
+                            })
+                else:
+                    # Пробуем преобразовать в список
+                    print(f"Неожиданный тип результата: {type(diarize_segments)}")
+                    # Если это итерируемый объект, пробуем преобразовать
+                    try:
+                        for item in diarize_segments:
+                            if isinstance(item, dict):
+                                diarize_segments_list.append({
+                                    "segment": {
+                                        "start": item.get("start", 0),
+                                        "end": item.get("end", 0)
+                                    },
+                                    "speaker": str(item.get("speaker", "SPEAKER_00"))
+                                })
+                    except Exception as iter_error:
+                        print(f"⚠️  Не удалось итерировать результат: {iter_error}")
+                        import traceback
+                        traceback.print_exc()
+                
+                print(f"✓ Diarization завершена: найдено {len(diarize_segments_list)} сегментов спикеров")
+                
+                if len(diarize_segments_list) == 0:
+                    print("⚠️  Diarization не нашла сегментов спикеров!")
+                    print("   Возможно, аудио слишком короткое или содержит только одного спикера")
+                    print("   Используем простую diarization на основе пауз как fallback")
+                    # Fallback на простую diarization
+                    if SIMPLE_DIARIZATION_AVAILABLE:
+                        return self._transcribe_with_simple_diarization(
+                            audio_path, language, model, beam_size=5, best_of=5, speaker_names=speaker_names
+                        )
+                    else:
+                        raise ValueError("Diarization не нашла спикеров и простая diarization недоступна")
+                
+                # Объединяем транскрипцию с diarization вручную
+                print("Объединение транскрипции с diarization...")
+                result = self._assign_speakers_manual(result, diarize_segments_list)
+                print("✓ Спикеры успешно присвоены к сегментам транскрипции")
+            except Exception as diarize_error:
+                print(f"⚠️  Ошибка при выполнении diarization: {diarize_error}")
+                import traceback
+                traceback.print_exc()
+                raise
         
         # Форматирование результата
         segments = []
@@ -511,8 +743,38 @@ class OptimizedSpeechRecognitionService:
             for speaker, texts in speakers_text.items()
         }
         
+        # Формируем красивый текст с разделением по спикерам
+        formatted_text_parts = []
+        current_speaker = None
+        current_text_parts = []
+        
+        for seg in segments:
+            speaker = seg.get("speaker", "SPEAKER_00")
+            text = seg.get("text", "").strip()
+            
+            if not text:
+                continue
+            
+            if speaker != current_speaker:
+                # Новый спикер - добавляем предыдущий текст
+                if current_speaker and current_text_parts:
+                    speaker_name = self._format_speaker_name(current_speaker, speaker_names)
+                    formatted_text_parts.append(f"{speaker_name}: {' '.join(current_text_parts)}")
+                    current_text_parts = []
+                current_speaker = speaker
+            
+            current_text_parts.append(text)
+        
+        # Добавляем последнего спикера
+        if current_speaker and current_text_parts:
+            speaker_name = self._format_speaker_name(current_speaker, speaker_names)
+            formatted_text_parts.append(f"{speaker_name}: {' '.join(current_text_parts)}")
+        
+        formatted_text = "\n\n".join(formatted_text_parts)
+        
         return {
-            "text": " ".join([seg["text"] for seg in segments]),
+            "text": " ".join([seg["text"] for seg in segments]),  # Простой текст
+            "formatted_text": formatted_text,  # Красивый текст с разделением по спикерам
             "language": result.get("language", "unknown"),
             "segments": segments,
             "speakers": speakers_output,  # Текст по каждому спикеру
@@ -559,7 +821,8 @@ class OptimizedSpeechRecognitionService:
         language: Optional[str],
         model: str,
         beam_size: int,
-        best_of: int
+        best_of: int,
+        speaker_names: Optional[List[str]] = None
     ) -> Dict:
         """Транскрипция с простым разделением по ролям на основе пауз (не требует дополнительных моделей)"""
         if not SIMPLE_DIARIZATION_AVAILABLE:
@@ -616,17 +879,53 @@ class OptimizedSpeechRecognitionService:
         if not segments_list:
             raise ValueError("Не удалось получить сегменты из аудио. Проверьте, что аудио содержит речь.")
         
-        # Применяем простую diarization
-        segments_with_speakers = simple_diarization(segments_list, pause_threshold=1.0)
+        # Применяем простую diarization с очень чувствительным порогом
+        # Используем агрессивный порог 0.3 сек + анализ паттернов вопрос-ответ
+        segments_with_speakers = simple_diarization(segments_list, pause_threshold=0.3)
+        
+        # Подсчитываем количество уникальных спикеров для отладки
+        unique_speakers = set(seg.get("speaker", "SPEAKER_00") for seg in segments_with_speakers)
+        print(f"✓ Простая diarization применена: найдено {len(unique_speakers)} спикеров")
+        print(f"  Спикеры: {sorted(unique_speakers)}")
         
         # Группируем по спикерам
         speakers_output = group_by_speakers(segments_with_speakers)
         
-        # Формируем полный текст
+        # Формируем полный текст (простой вариант без меток спикеров)
         full_text = " ".join([seg.get("text", "") for seg in segments_with_speakers if seg.get("text")])
         
+        # Формируем красивый текст с разделением по спикерам
+        formatted_text_parts = []
+        current_speaker = None
+        current_text_parts = []
+        
+        for seg in segments_with_speakers:
+            speaker = seg.get("speaker", "SPEAKER_00")
+            text = seg.get("text", "").strip()
+            
+            if not text:
+                continue
+            
+            if speaker != current_speaker:
+                # Новый спикер - добавляем предыдущий текст
+                if current_speaker and current_text_parts:
+                    speaker_name = self._format_speaker_name(current_speaker, speaker_names)
+                    formatted_text_parts.append(f"{speaker_name}: {' '.join(current_text_parts)}")
+                    current_text_parts = []
+                current_speaker = speaker
+            
+            current_text_parts.append(text)
+        
+        # Добавляем последнего спикера
+        if current_speaker and current_text_parts:
+            speaker_name = self._format_speaker_name(current_speaker, speaker_names)
+            formatted_text_parts.append(f"{speaker_name}: {' '.join(current_text_parts)}")
+        
+        formatted_text = "\n\n".join(formatted_text_parts)
+        
         return {
-            "text": full_text,
+            "text": full_text,  # Простой текст без меток
+            "formatted_text": formatted_text,  # Красивый текст с разделением по спикерам
             "language": info.language,
             "segments": segments_with_speakers,
             "speakers": speakers_output,
@@ -660,6 +959,35 @@ class OptimizedSpeechRecognitionService:
             srt_lines.append(f"{idx}\n{start} --> {end}\n{text}\n")
         
         return "\n".join(srt_lines)
+    
+    def _format_speaker_name(self, speaker: str, speaker_names: Optional[List[str]] = None) -> str:
+        """Форматирует имя спикера для красивого отображения"""
+        # Если переданы имена спикеров, используем их
+        if speaker_names and len(speaker_names) > 0:
+            if speaker.startswith("SPEAKER_"):
+                speaker_num = speaker.replace("SPEAKER_", "")
+                try:
+                    num = int(speaker_num)
+                    if 0 <= num < len(speaker_names):
+                        return speaker_names[num]
+                except:
+                    pass
+        
+        # Преобразуем SPEAKER_00 в более читаемый формат
+        if speaker.startswith("SPEAKER_"):
+            speaker_num = speaker.replace("SPEAKER_", "")
+            # Используем простую нумерацию (можно улучшить с помощью ML для определения имен)
+            try:
+                num = int(speaker_num)
+                if num == 0:
+                    return "Спикер 1"
+                elif num == 1:
+                    return "Спикер 2"
+                else:
+                    return f"Спикер {num + 1}"
+            except:
+                return f"Спикер {speaker_num}"
+        return speaker
     
     def _generate_vtt(self, segments: List[Dict], include_speakers: bool = False) -> str:
         """Генерирует VTT с опциональными метками спикеров"""

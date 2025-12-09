@@ -32,13 +32,22 @@ cd backend
 
 ### 2. Создайте виртуальное окружение (если еще не создано):
 ```bash
-# Windows
+# Windows PowerShell
 py -m venv venv
-.\venv\Scripts\activate
+.\venv\Scripts\Activate.ps1
+
+# Windows CMD
+py -m venv venv
+.\venv\Scripts\activate.bat
 
 # Linux/Mac
 python3 -m venv venv
 source venv/bin/activate
+```
+
+**Примечание для PowerShell:** Если возникает ошибка выполнения скриптов, выполните:
+```powershell
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 ```
 
 ### 3. Установите зависимости:

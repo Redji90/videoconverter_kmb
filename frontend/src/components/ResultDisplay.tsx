@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import type { Translations } from '../locales/ru'
 
 interface ResultDisplayProps {
   result: {
@@ -16,9 +17,10 @@ interface ResultDisplayProps {
     speakers?: Record<string, string>
     num_speakers?: number
   }
+  t: Translations
 }
 
-export default function ResultDisplay({ result }: ResultDisplayProps) {
+export default function ResultDisplay({ result, t }: ResultDisplayProps) {
   const [copied, setCopied] = useState(false)
 
   const copyToClipboard = () => {
@@ -52,16 +54,16 @@ export default function ResultDisplay({ result }: ResultDisplayProps) {
   return (
     <div className="mt-6 bg-white rounded-lg shadow-lg p-6">
       <div className="flex justify-between items-center mb-4">
-        <h2 className="text-2xl font-bold text-gray-800">Результат</h2>
+        <h2 className="text-2xl font-bold text-gray-800">{t.result}</h2>
         <div className="flex gap-4 items-center">
           {result.language && (
             <span className="text-sm text-gray-500">
-              Язык: {result.language.toUpperCase()}
+              {t.languageLabel}: {result.language.toUpperCase()}
             </span>
           )}
           {result.num_speakers && result.num_speakers > 0 && (
             <span className="text-sm text-purple-600 font-medium">
-              🎭 Спикеров: {result.num_speakers}
+              🎭 {t.speakers}: {result.num_speakers}
             </span>
           )}
         </div>
@@ -70,19 +72,19 @@ export default function ResultDisplay({ result }: ResultDisplayProps) {
       {/* Текст */}
       <div className="mb-4">
         <div className="flex justify-between items-center mb-2">
-          <h3 className="text-lg font-semibold text-gray-700">Текст:</h3>
+          <h3 className="text-lg font-semibold text-gray-700">{t.text}:</h3>
           <div className="space-x-2">
             <button
               onClick={copyToClipboard}
               className="px-3 py-1 text-sm bg-gray-100 hover:bg-gray-200 rounded transition-colors"
             >
-              {copied ? '✓ Скопировано' : 'Копировать'}
+              {copied ? t.copied : t.copy}
             </button>
             <button
               onClick={downloadText}
               className="px-3 py-1 text-sm bg-blue-100 hover:bg-blue-200 rounded transition-colors"
             >
-              Скачать TXT
+              {t.downloadTxt}
             </button>
           </div>
         </div>
@@ -95,12 +97,14 @@ export default function ResultDisplay({ result }: ResultDisplayProps) {
       {result.subtitles && (
         <div className="mt-4">
           <div className="flex justify-between items-center mb-2">
-            <h3 className="text-lg font-semibold text-gray-700">Субтитры:</h3>
+            <h3 className="text-lg font-semibold text-gray-700">
+              {t.subtitles}
+            </h3>
             <button
               onClick={() => downloadSubtitles(result.format || 'srt')}
               className="px-3 py-1 text-sm bg-green-100 hover:bg-green-200 rounded transition-colors"
             >
-              Скачать {result.format?.toUpperCase()}
+              {result.format === 'srt' ? t.downloadSrt : t.downloadVtt}
             </button>
           </div>
           <div className="bg-gray-50 rounded-lg p-4 max-h-64 overflow-y-auto">
@@ -115,7 +119,7 @@ export default function ResultDisplay({ result }: ResultDisplayProps) {
       {result.speakers && Object.keys(result.speakers).length > 0 && (
         <div className="mt-4">
           <h3 className="text-lg font-semibold text-gray-700 mb-2">
-            Текст по спикерам:
+            {t.textBySpeakers}
           </h3>
           <div className="space-y-3">
             {Object.entries(result.speakers).map(([speaker, text]) => (
@@ -132,7 +136,7 @@ export default function ResultDisplay({ result }: ResultDisplayProps) {
       {result.segments && result.segments.length > 0 && (
         <div className="mt-4">
           <h3 className="text-lg font-semibold text-gray-700 mb-2">
-            Сегменты с временными метками:
+            {t.segmentsWithTimestamps}
           </h3>
           <div className="space-y-2 max-h-64 overflow-y-auto">
             {result.segments.map((segment) => (

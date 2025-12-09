@@ -46,19 +46,70 @@ except ImportError:
 app = FastAPI(title="Video to Text Converter", version="1.0.0")
 
 # Добавляем маршрут для статики (frontend) если развернуто на Spaces
-static_dir = os.path.join(os.path.dirname(__file__), "..", "static")
-if os.path.exists(static_dir):
+# Проверяем несколько возможных путей
+static_dirs = [
+    os.path.join(os.path.dirname(__file__), "..", "static"),  # Локальная разработка
+    "/app/static",  # Hugging Face Spaces
+    os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "static"),  # Альтернативный путь
+]
+
+static_dir = None
+for dir_path in static_dirs:
+    if os.path.exists(dir_path):
+        static_dir = dir_path
+        break
+
+if static_dir:
     from fastapi.staticfiles import StaticFiles
-    from fastapi.responses import FileResponse
+    from fastapi.responses import FileResponse, Response
+    from starlette.responses import HTMLResponse
     
+    # Монтируем статику на /static
     app.mount("/static", StaticFiles(directory=static_dir), name="static")
+    
+    # Также монтируем /assets для прямого доступа к assets из HTML
+    assets_dir = os.path.join(static_dir, "assets")
+    if os.path.exists(assets_dir):
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="assets")
     
     @app.get("/")
     async def read_root():
         index_path = os.path.join(static_dir, "index.html")
+        print(f"Проверка index.html: путь={index_path}, существует={os.path.exists(index_path)}")
         if os.path.exists(index_path):
-            return FileResponse(index_path)
-        return {"message": "Video to Text Converter API", "status": "running"}
+            print(f"✓ Отправка index.html из {index_path}")
+            with open(index_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            return HTMLResponse(content=content)
+        print(f"⚠️ index.html не найден в {index_path}")
+        print(f"   Содержимое static_dir ({static_dir}):")
+        if os.path.exists(static_dir):
+            try:
+                for item in os.listdir(static_dir):
+                    print(f"     - {item}")
+            except Exception as e:
+                print(f"     Ошибка при чтении директории: {e}")
+        return {"message": "Video to Text Converter API", "status": "running", "static_dir": static_dir, "index_exists": os.path.exists(index_path)}
+    
+    # Fallback для SPA routing - все остальные GET запросы возвращают index.html
+    @app.get("/{full_path:path}")
+    async def serve_spa(full_path: str):
+        # Пропускаем API маршруты
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="Not found")
+        
+        # Пропускаем статические файлы (они должны обрабатываться через mount)
+        if full_path.startswith(("static/", "assets/")):
+            raise HTTPException(status_code=404, detail="Not found")
+        
+        # Для всех остальных маршрутов возвращаем index.html (SPA routing)
+        index_path = os.path.join(static_dir, "index.html")
+        if os.path.exists(index_path):
+            with open(index_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            return HTMLResponse(content=content)
+        
+        raise HTTPException(status_code=404, detail="Not found")
 
 # CORS middleware для работы с frontend
 app.add_middleware(
@@ -91,7 +142,9 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             return response
         except Exception as e:
             elapsed = time.time() - start
-            print(f"!!! ОШИБКА В MIDDLEWARE: {e} (за {elapsed:.2f} сек)")
+            print(f"<<< ОШИБКА: {type(e).__name__}: {str(e)} (за {elapsed:.2f} сек)")
+            import traceback
+            traceback.print_exc()
             print(f"{'='*60}\n")
             raise
 
@@ -166,7 +219,8 @@ async def convert_video_to_text(
     model: str = Form("base"),
     beam_size: int = Form(5),
     enable_diarization: bool = Form(False),
-    num_speakers: Optional[int] = Form(None)
+    num_speakers: Optional[int] = Form(None),
+    speaker_names: Optional[str] = Form(None)
 ):
     """
     Конвертирует видео в текст
@@ -185,6 +239,22 @@ async def convert_video_to_text(
     print(f"Размер: {file.size if hasattr(file, 'size') else 'неизвестно'} байт")
     print(f"Настройки: язык={language}, модель={model}, beam_size={beam_size}")
     print(f"Diarization: {enable_diarization}, спикеров={num_speakers}")
+    
+    # Парсим имена спикеров из JSON
+    speaker_names_list = []
+    if speaker_names:
+        try:
+            import json
+            speaker_names_list = json.loads(speaker_names)
+            print(f"Имена спикеров: {speaker_names_list}")
+        except json.JSONDecodeError as e:
+            print(f"⚠️  Ошибка при парсинге имен спикеров (невалидный JSON): {e}")
+            print(f"   Полученная строка: {speaker_names}")
+        except Exception as e:
+            print(f"⚠️  Ошибка при парсинге имен спикеров: {e}")
+            import traceback
+            traceback.print_exc()
+    
     print(f"{'='*60}\n")
     
     try:
@@ -238,7 +308,8 @@ async def convert_video_to_text(
                         model=model,
                         beam_size=beam_size,
                         enable_diarization=enable_diarization,
-                        num_speakers=num_speakers
+                        num_speakers=num_speakers,
+                        speaker_names=speaker_names_list
                     )
                 except Exception as e:
                     print(f"❌ Ошибка при транскрипции: {e}")
@@ -264,9 +335,35 @@ async def convert_video_to_text(
             print(f"[3/4] Распознавание завершено за {transcribe_time:.2f} сек")
             print(f"Результат: {len(result.get('text', ''))} символов, {len(result.get('segments', []))} сегментов")
             
+            # Отладочная информация о diarization
+            if enable_diarization:
+                print(f"✓ Diarization был запрошен пользователем")
+                if "speakers" in result:
+                    num_speakers = result.get("num_speakers", 0)
+                    print(f"✓ Разделение по спикерам: найдено {num_speakers} спикеров")
+                    speakers_list = list(result.get("speakers", {}).keys())
+                    print(f"  Спикеры: {speakers_list}")
+                    if "formatted_text" in result:
+                        formatted_len = len(result["formatted_text"])
+                        print(f"✓ Форматированный текст создан ({formatted_len} символов)")
+                    else:
+                        print(f"⚠️  Форматированный текст НЕ создан!")
+                else:
+                    print(f"⚠️  Diarization был запрошен, но результат не содержит информации о спикерах!")
+            else:
+                print(f"ℹ️  Diarization НЕ был запрошен пользователем")
+            
+            # Используем форматированный текст, если есть (для diarization)
+            # Иначе используем обычный текст
+            display_text = result.get("formatted_text")
+            if not display_text:
+                display_text = result.get("text", "")
+                if enable_diarization:
+                    print(f"⚠️  Используется обычный текст вместо форматированного!")
+            
             response_data = {
                 "success": True,
-                "text": result["text"],
+                "text": display_text,
                 "segments": result.get("segments", []),
                 "language": result.get("language", "unknown")
             }

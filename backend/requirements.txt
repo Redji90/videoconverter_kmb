@@ -7,8 +7,11 @@ ffmpeg-python==0.2.0
 pydantic==2.5.0
 python-jose[cryptography]==3.3.0
 aiofiles==23.2.1
-# Опционально для speaker diarization (раскомментируйте при необходимости):
-# whisperx==3.1.1
-# pyannote.audio==3.1.1
-# torch-audio==2.1.0
+# Для точного speaker diarization (WhisperX + pyannote.audio):
+whisperx==3.1.1
+pyannote.audio==3.1.1
+torch>=2.0.0
+torchaudio>=2.0.0
+# Фиксируем NumPy < 2.0 для совместимости с pyannote.audio
+numpy<2.0.0
 

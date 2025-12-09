@@ -6,7 +6,7 @@ export const en = {
   supportedFormats: "Supported formats: MP4, AVI, MOV, MKV, etc.",
   language: "Language",
   autoDetect: "Auto-detect",
-  model: "Whisper Model",
+  model: "Recognition Model",
   generateSubtitles: "Generate subtitles (SRT/VTT)",
   speedMode: "⚡ Speed mode (faster, but less accurate)",
   enableDiarization: "🎭 Speaker diarization (if multiple people)",

@@ -19,7 +19,8 @@ function App() {
     enableDiarization: boolean,
     numSpeakers: number | null,
     beamSize: number,
-    speakerNames: string[]
+    speakerNames: string[],
+    translateToEnglish: boolean
   ) => {
     console.log('=== НАЧАЛО КОНВЕРТАЦИИ ===')
     console.log('Файл:', file.name, 'Размер:', (file.size / 1024 / 1024).toFixed(2), 'MB')
@@ -44,6 +45,7 @@ function App() {
       formData.append('model', model)
       formData.append('beam_size', beamSize.toString())
       formData.append('enable_diarization', enableDiarization.toString())
+      formData.append('translate_to_english', translateToEnglish.toString())
       if (numSpeakers !== null) {
         formData.append('num_speakers', numSpeakers.toString())
       }

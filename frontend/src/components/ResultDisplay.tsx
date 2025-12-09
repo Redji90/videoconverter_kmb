@@ -16,6 +16,15 @@ interface ResultDisplayProps {
     language?: string
     speakers?: Record<string, string>
     num_speakers?: number
+    translated_text?: string
+    translated_language?: string
+    translated_segments?: Array<{
+      id: number
+      start: number
+      end: number
+      text: string
+    }>
+    has_translation?: boolean
   }
   t: Translations
 }
@@ -69,10 +78,12 @@ export default function ResultDisplay({ result, t }: ResultDisplayProps) {
         </div>
       </div>
 
-      {/* Текст */}
+      {/* Оригинальный текст */}
       <div className="mb-4">
         <div className="flex justify-between items-center mb-2">
-          <h3 className="text-lg font-semibold text-gray-700">{t.text}:</h3>
+          <h3 className="text-lg font-semibold text-gray-700">
+            {t.text} {result.language && `(${result.language.toUpperCase()})`}:
+          </h3>
           <div className="space-x-2">
             <button
               onClick={copyToClipboard}
@@ -92,6 +103,46 @@ export default function ResultDisplay({ result, t }: ResultDisplayProps) {
           <p className="text-gray-800 whitespace-pre-wrap">{result.text}</p>
         </div>
       </div>
+
+      {/* Перевод на английский */}
+      {result.has_translation && result.translated_text && (
+        <div className="mb-4 border-t pt-4">
+          <div className="flex justify-between items-center mb-2">
+            <h3 className="text-lg font-semibold text-gray-700">
+              {t.translatedText} {result.translated_language && `(${result.translated_language.toUpperCase()})`}:
+            </h3>
+            <div className="space-x-2">
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(result.translated_text || '')
+                  setCopied(true)
+                  setTimeout(() => setCopied(false), 2000)
+                }}
+                className="px-3 py-1 text-sm bg-gray-100 hover:bg-gray-200 rounded transition-colors"
+              >
+                {copied ? t.copied : t.copy}
+              </button>
+              <button
+                onClick={() => {
+                  const blob = new Blob([result.translated_text || ''], { type: 'text/plain' })
+                  const url = URL.createObjectURL(blob)
+                  const a = document.createElement('a')
+                  a.href = url
+                  a.download = 'translation.txt'
+                  a.click()
+                  URL.revokeObjectURL(url)
+                }}
+                className="px-3 py-1 text-sm bg-blue-100 hover:bg-blue-200 rounded transition-colors"
+              >
+                {t.downloadTxt}
+              </button>
+            </div>
+          </div>
+          <div className="bg-blue-50 rounded-lg p-4 max-h-96 overflow-y-auto border border-blue-200">
+            <p className="text-gray-800 whitespace-pre-wrap">{result.translated_text}</p>
+          </div>
+        </div>
+      )}
 
       {/* Субтитры */}
       {result.subtitles && (

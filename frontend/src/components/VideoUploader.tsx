@@ -2,7 +2,7 @@ import { useState, useRef } from 'react'
 import type { Translations } from '../locales/ru'
 
 interface VideoUploaderProps {
-  onConvert: (file: File, language: string, model: string, withSubtitles: boolean, enableDiarization: boolean, numSpeakers: number | null, beamSize: number, speakerNames: string[]) => void
+  onConvert: (file: File, language: string, model: string, withSubtitles: boolean, enableDiarization: boolean, numSpeakers: number | null, beamSize: number, speakerNames: string[], translateToEnglish: boolean) => void
   loading: boolean
   t: Translations
 }
@@ -13,6 +13,7 @@ export default function VideoUploader({ onConvert, loading, t }: VideoUploaderPr
   const [model, setModel] = useState('base')
   const [withSubtitles, setWithSubtitles] = useState(false)
   const [enableDiarization, setEnableDiarization] = useState(false)
+  const [translateToEnglish, setTranslateToEnglish] = useState(false)
   const [numSpeakers, setNumSpeakers] = useState<string>('')
   const [beamSize, setBeamSize] = useState(5)
   const [speedMode, setSpeedMode] = useState(false)
@@ -41,8 +42,8 @@ export default function VideoUploader({ onConvert, loading, t }: VideoUploaderPr
     const beam = speedMode ? 1 : beamSize
     // Фильтруем пустые имена спикеров
     const names = speakerNames.filter(name => name.trim() !== '')
-    console.log('Вызов onConvert с параметрами:', { speakers, beam, speakerNames: names })
-    onConvert(file, language, model, withSubtitles, enableDiarization, speakers, beam, names)
+    console.log('Вызов onConvert с параметрами:', { speakers, beam, speakerNames: names, translateToEnglish })
+    onConvert(file, language, model, withSubtitles, enableDiarization, speakers, beam, names, translateToEnglish)
   }
 
   const handleDrop = (e: React.DragEvent) => {
@@ -171,17 +172,29 @@ export default function VideoUploader({ onConvert, loading, t }: VideoUploaderPr
             </span>
           </label>
           
-          <label className="flex items-center space-x-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={enableDiarization}
-              onChange={(e) => setEnableDiarization(e.target.checked)}
-              className="w-4 h-4 text-purple-600 border-gray-300 rounded focus:ring-purple-500"
-            />
-            <span className="text-sm text-gray-700">
-              {t.enableDiarization}
-            </span>
-          </label>
+                <label className="flex items-center space-x-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={enableDiarization}
+                    onChange={(e) => setEnableDiarization(e.target.checked)}
+                    className="w-4 h-4 text-purple-600 border-gray-300 rounded focus:ring-purple-500"
+                  />
+                  <span className="text-sm text-gray-700">
+                    {t.enableDiarization}
+                  </span>
+                </label>
+                
+                <label className="flex items-center space-x-2 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={translateToEnglish}
+                    onChange={(e) => setTranslateToEnglish(e.target.checked)}
+                    className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                  />
+                  <span className="text-sm text-gray-700">
+                    {t.translateToEnglish}
+                  </span>
+                </label>
           
           {enableDiarization && (
             <div className="ml-6 space-y-3">

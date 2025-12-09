@@ -1,7 +1,9 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from typing import Optional
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from starlette.requests import Request
 import os
 import tempfile
 from pathlib import Path
@@ -122,7 +124,7 @@ app.add_middleware(
 
 # Middleware для логирования всех запросов
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.requests import Request
+# Request уже импортирован выше
 
 class LoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
@@ -137,18 +139,45 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         try:
             response = await call_next(request)
             elapsed = time.time() - start
-            print(f"<<< ОТВЕТ: {response.status_code} (за {elapsed:.2f} сек)")
+            if response.status_code >= 400:
+                print(f"<<< ОТВЕТ: {response.status_code} (за {elapsed:.2f} сек) - ОШИБКА!")
+                # Пытаемся получить тело ответа для диагностики
+                try:
+                    if hasattr(response, 'body'):
+                        body = response.body
+                        if body:
+                            print(f"Тело ответа: {body.decode('utf-8')[:500]}")
+                except:
+                    pass
+            else:
+                print(f"<<< ОТВЕТ: {response.status_code} (за {elapsed:.2f} сек)")
             print(f"{'='*60}\n")
             return response
         except Exception as e:
             elapsed = time.time() - start
-            print(f"<<< ОШИБКА: {type(e).__name__}: {str(e)} (за {elapsed:.2f} сек)")
+            print(f"<<< ОШИБКА В MIDDLEWARE: {type(e).__name__}: {str(e)} (за {elapsed:.2f} сек)")
             import traceback
             traceback.print_exc()
             print(f"{'='*60}\n")
             raise
 
 app.add_middleware(LoggingMiddleware)
+
+# Обработчик ошибок валидации
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    print(f"\n{'='*60}")
+    print(f"❌ ОШИБКА ВАЛИДАЦИИ ЗАПРОСА")
+    print(f"URL: {request.url}")
+    print(f"Метод: {request.method}")
+    print(f"Ошибки валидации:")
+    for error in exc.errors():
+        print(f"  - {error}")
+    print(f"{'='*60}\n")
+    return JSONResponse(
+        status_code=400,
+        content={"detail": exc.errors(), "body": exc.body}
+    )
 
 # Инициализация сервисов
 video_processor = VideoProcessor()
@@ -220,7 +249,8 @@ async def convert_video_to_text(
     beam_size: int = Form(5),
     enable_diarization: bool = Form(False),
     num_speakers: Optional[int] = Form(None),
-    speaker_names: Optional[str] = Form(None)
+    speaker_names: Optional[str] = Form(None),
+    translate_to_english: Optional[bool] = Form(False)
 ):
     """
     Конвертирует видео в текст
@@ -235,10 +265,18 @@ async def convert_video_to_text(
     
     print(f"\n{'='*60}")
     print(f"=== НОВЫЙ ЗАПРОС НА КОНВЕРТАЦИЮ ===")
-    print(f"Файл: {file.filename}")
-    print(f"Размер: {file.size if hasattr(file, 'size') else 'неизвестно'} байт")
+    try:
+        print(f"Файл: {file.filename}")
+        print(f"Размер: {file.size if hasattr(file, 'size') else 'неизвестно'} байт")
+    except Exception as e:
+        print(f"⚠️  Ошибка при чтении информации о файле: {e}")
     print(f"Настройки: язык={language}, модель={model}, beam_size={beam_size}")
     print(f"Diarization: {enable_diarization}, спикеров={num_speakers}")
+    # Обрабатываем translate_to_english как опциональный параметр (для совместимости)
+    translate_to_english_value = translate_to_english if translate_to_english is not None else False
+    print(f"Перевод на английский: {translate_to_english_value}")
+    if translate_to_english_value and enable_diarization:
+        print("⚠️  Внимание: Diarization отключен при переводе на английский (несовместимо)")
     
     # Парсим имена спикеров из JSON
     speaker_names_list = []
@@ -300,8 +338,17 @@ async def convert_video_to_text(
             
             if hasattr(speech_service, 'transcribe'):
                 # Оптимизированный сервис
-                print(f"Используется оптимизированный сервис")
+                print(f"[MAIN] Используется оптимизированный сервис")
+                print(f"[MAIN] Параметры транскрипции:")
+                print(f"  - audio_path: {audio_path}")
+                print(f"  - language: {language if language != 'auto' else None}")
+                print(f"  - model: {model}")
+                print(f"  - beam_size: {beam_size}")
+                print(f"  - enable_diarization: {enable_diarization}")
+                print(f"  - num_speakers: {num_speakers}")
+                print(f"  - translate_to_english: {translate_to_english}")
                 try:
+                    print(f"[MAIN] Вызов speech_service.transcribe()...")
                     result = speech_service.transcribe(
                         audio_path=audio_path,
                         language=language if language != "auto" else None,
@@ -309,10 +356,13 @@ async def convert_video_to_text(
                         beam_size=beam_size,
                         enable_diarization=enable_diarization,
                         num_speakers=num_speakers,
-                        speaker_names=speaker_names_list
+                        speaker_names=speaker_names_list,
+                        translate_to_english=translate_to_english_value
                     )
+                    print(f"[MAIN] ✓ Транскрипция завершена успешно")
+                    print(f"[MAIN] Результат содержит: {len(result.get('segments', []))} сегментов")
                 except Exception as e:
-                    print(f"❌ Ошибка при транскрипции: {e}")
+                    print(f"[MAIN] ❌ Ошибка при транскрипции: {e}")
                     import traceback
                     traceback.print_exc()
                     raise HTTPException(status_code=500, detail=f"Ошибка транскрипции: {str(e)}")
@@ -372,6 +422,14 @@ async def convert_video_to_text(
             if "speakers" in result:
                 response_data["speakers"] = result["speakers"]
                 response_data["num_speakers"] = result.get("num_speakers", 0)
+            
+            # Добавляем перевод, если есть
+            if result.get("has_translation") and result.get("translated_text"):
+                response_data["translated_text"] = result["translated_text"]
+                response_data["translated_language"] = result.get("translated_language", "en")
+                response_data["translated_segments"] = result.get("translated_segments", [])
+                response_data["has_translation"] = True
+                print(f"✓ Перевод добавлен в ответ: {len(result['translated_text'])} символов")
             
             total_time = time.time() - start_time
             print(f"[4/4] Формирование ответа...")

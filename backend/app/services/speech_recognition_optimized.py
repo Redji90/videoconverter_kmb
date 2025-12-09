@@ -157,7 +157,9 @@ class OptimizedSpeechRecognitionService:
     def load_model(self, model_name: str = "base"):
         """Загружает модель"""
         if model_name not in self.models:
-            print(f"Загрузка модели: {model_name}")
+            print(f"[LOAD_MODEL] Начало загрузки модели: {model_name}")
+            print(f"[LOAD_MODEL] FASTER_WHISPER_AVAILABLE: {FASTER_WHISPER_AVAILABLE}")
+            print(f"[LOAD_MODEL] Устройство: {self.device}")
             
             if FASTER_WHISPER_AVAILABLE:
                 # Используем faster-whisper (быстрее)
@@ -184,12 +186,21 @@ class OptimizedSpeechRecognitionService:
                             print(f"  Модель не найдена, будет скачана в: {download_path}")
                     print(f"  Используется Faster-Whisper (формат CTranslate2)")
                 
-                self.models[model_name] = WhisperModel(
-                    model_name,
-                    device=self.device,
-                    compute_type="float16" if self.device == "cuda" else "int8",
-                    download_root=download_path
-                )
+                print(f"[LOAD_MODEL] Создание WhisperModel для {model_name}...")
+                print(f"[LOAD_MODEL] Параметры: device={self.device}, compute_type={'float16' if self.device == 'cuda' else 'int8'}, download_root={download_path}")
+                try:
+                    self.models[model_name] = WhisperModel(
+                        model_name,
+                        device=self.device,
+                        compute_type="float16" if self.device == "cuda" else "int8",
+                        download_root=download_path
+                    )
+                    print(f"[LOAD_MODEL] ✓ WhisperModel создан успешно")
+                except Exception as e:
+                    print(f"[LOAD_MODEL] ❌ Ошибка при создании WhisperModel: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    raise
             else:
                 # Fallback на стандартный Whisper
                 print(f"  Используется стандартный Whisper (формат .pt)")
@@ -205,9 +216,17 @@ class OptimizedSpeechRecognitionService:
                         print(f"  ⚠ Модель не найдена в {whisper_cache}, будет скачана")
                 else:
                     print(f"  ⚠ WHISPER_CACHE_DIR не установлен, используется системный кэш")
-                self.models[model_name] = whisper.load_model(model_name)
+                print(f"[LOAD_MODEL] Загрузка стандартной модели Whisper: {model_name}")
+                try:
+                    self.models[model_name] = whisper.load_model(model_name)
+                    print(f"[LOAD_MODEL] ✓ Стандартная модель Whisper загружена")
+                except Exception as e:
+                    print(f"[LOAD_MODEL] ❌ Ошибка при загрузке стандартной модели: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    raise
             
-            print(f"✓ Модель {model_name} загружена")
+            print(f"[LOAD_MODEL] ✓ Модель {model_name} полностью загружена и готова к использованию")
         return self.models[model_name]
     
     def transcribe(
@@ -219,10 +238,11 @@ class OptimizedSpeechRecognitionService:
         best_of: int = 5,
         enable_diarization: bool = False,
         num_speakers: Optional[int] = None,
-        speaker_names: Optional[List[str]] = None
+        speaker_names: Optional[List[str]] = None,
+        translate_to_english: bool = False
     ) -> Dict:
         """
-        Распознает речь с опциональным разделением по ролям
+        Распознает речь с опциональным разделением по ролям и переводом на английский
         
         Args:
             audio_path: путь к аудио
@@ -232,12 +252,14 @@ class OptimizedSpeechRecognitionService:
             best_of: количество попыток (меньше = быстрее)
             enable_diarization: включить разделение по ролям
             num_speakers: количество спикеров (None = автоопределение)
+            translate_to_english: перевести результат на английский язык
         
         Returns:
             словарь с результатами
         """
         # Diarization: сначала пробуем WhisperX, если недоступен - используем простую эвристику
-        if enable_diarization:
+        # Примечание: diarization с переводом не поддерживается (нужно сначала транскрибировать, потом переводить)
+        if enable_diarization and not translate_to_english:
             if WHISPERX_AVAILABLE:
                 try:
                     return self._transcribe_with_diarization(
@@ -246,8 +268,8 @@ class OptimizedSpeechRecognitionService:
                 except Exception as e:
                     print(f"⚠️  WhisperX diarization не удалось: {e}")
                     print("   Используем простую diarization на основе пауз")
-                    # Fallback на простую diarization
-                    if SIMPLE_DIARIZATION_AVAILABLE:
+                    # Fallback на простую diarization (только если не требуется перевод)
+                    if SIMPLE_DIARIZATION_AVAILABLE and not translate_to_english:
                         try:
                             return self._transcribe_with_simple_diarization(
                                 audio_path, language, model, beam_size, best_of, speaker_names
@@ -258,8 +280,8 @@ class OptimizedSpeechRecognitionService:
                             # Продолжаем с обычной транскрипцией
                     else:
                         print("   Простая diarization недоступна - продолжаем без разделения по ролям")
-            elif SIMPLE_DIARIZATION_AVAILABLE:
-                # Используем простую diarization, если WhisperX не установлен
+            elif SIMPLE_DIARIZATION_AVAILABLE and not translate_to_english:
+                # Используем простую diarization, если WhisperX не установлен (только если не требуется перевод)
                 try:
                     return self._transcribe_with_simple_diarization(
                         audio_path, language, model, beam_size, best_of, speaker_names
@@ -270,18 +292,34 @@ class OptimizedSpeechRecognitionService:
                     # Продолжаем с обычной транскрипцией
         
         # Стандартная транскрипция (быстрее)
+        print(f"[TRANSCRIBE] Загрузка модели {model}...")
         whisper_model = self.load_model(model)
+        print(f"[TRANSCRIBE] Модель {model} загружена, начинаем транскрипцию...")
+        
+        # Всегда делаем транскрипцию на исходном языке
+        # Если нужен перевод - делаем дополнительный вызов
+        if translate_to_english:
+            print(f"🌐 Режим перевода включен: будет выполнен перевод в дополнение к транскрипции")
         
         if FASTER_WHISPER_AVAILABLE:
-            # Faster-Whisper API
-            segments, info = whisper_model.transcribe(
-                audio_path,
-                language=language,
-                beam_size=beam_size,
-                best_of=best_of,
-                vad_filter=True,  # Voice Activity Detection для ускорения
-                vad_parameters=dict(min_silence_duration_ms=500)
-            )
+            # Faster-Whisper API - сначала транскрипция на исходном языке
+            print(f"[TRANSCRIBE] Выполнение транскрипции на исходном языке (Faster-Whisper)...")
+            print(f"[TRANSCRIBE] Параметры: language={language}, beam_size={beam_size}, best_of={best_of}")
+            try:
+                segments, info = whisper_model.transcribe(
+                    audio_path,
+                    language=language,
+                    beam_size=beam_size,
+                    best_of=best_of,
+                    vad_filter=True,  # Voice Activity Detection для ускорения
+                    vad_parameters=dict(min_silence_duration_ms=500)
+                )
+                print(f"[TRANSCRIBE] ✓ Транскрипция завершена, обработка сегментов...")
+            except Exception as e:
+                print(f"[TRANSCRIBE] ❌ Ошибка при транскрипции: {e}")
+                import traceback
+                traceback.print_exc()
+                raise
             
             # Конвертация в нужный формат
             segments_list = []
@@ -297,14 +335,59 @@ class OptimizedSpeechRecognitionService:
                 segments_list.append(seg_dict)
                 full_text_parts.append(segment.text.strip())
             
-            return {
+            # Формируем результат с оригинальным текстом
+            result = {
                 "text": " ".join(full_text_parts),
                 "language": info.language,
-                "segments": segments_list
+                "segments": segments_list,
+                "has_translation": False
             }
+            
+            # Если нужен перевод - делаем дополнительный вызов через стандартный Whisper
+            if translate_to_english:
+                print(f"[TRANSLATE] Начало перевода на английский...")
+                print(f"[TRANSLATE] ⚠️  Faster-Whisper не поддерживает перевод, используем стандартный Whisper")
+                import whisper
+                try:
+                    standard_model = whisper.load_model(model)
+                    print(f"[TRANSLATE] Стандартная модель загружена, начинаем перевод...")
+                    translate_result = standard_model.transcribe(
+                        audio_path,
+                        language=language,
+                        task="translate",
+                        beam_size=beam_size,
+                        best_of=best_of
+                    )
+                    print(f"[TRANSLATE] ✓ Перевод завершен")
+                    
+                    # Формируем результат перевода
+                    translated_segments = [
+                        {
+                            "id": seg.get("id", i),
+                            "start": seg.get("start", 0),
+                            "end": seg.get("end", 0),
+                            "text": seg.get("text", "").strip()
+                        }
+                        for i, seg in enumerate(translate_result.get("segments", []))
+                    ]
+                    
+                    result["translated_text"] = translate_result["text"].strip()
+                    result["translated_language"] = "en"
+                    result["translated_segments"] = translated_segments
+                    result["has_translation"] = True
+                except Exception as e:
+                    print(f"[TRANSLATE] ❌ Ошибка при переводе: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    # Продолжаем без перевода, возвращаем только оригинал
+                    print(f"[TRANSLATE] ⚠️  Продолжаем без перевода")
+                    result["has_translation"] = False
+            
+            return result
         else:
-            # Стандартный Whisper
-            result = whisper_model.transcribe(
+            # Стандартный Whisper - сначала транскрипция на исходном языке
+            print(f"[TRANSCRIBE] Выполнение транскрипции на исходном языке (стандартный Whisper)...")
+            original_result = whisper_model.transcribe(
                 audio_path,
                 language=language,
                 task="transcribe",
@@ -312,19 +395,57 @@ class OptimizedSpeechRecognitionService:
                 best_of=best_of
             )
             
-            return {
-                "text": result["text"].strip(),
-                "language": result.get("language", "unknown"),
-                "segments": [
-                    {
-                        "id": seg.get("id", i),
-                        "start": seg.get("start", 0),
-                        "end": seg.get("end", 0),
-                        "text": seg.get("text", "").strip()
-                    }
-                    for i, seg in enumerate(result.get("segments", []))
-                ]
+            original_segments = [
+                {
+                    "id": seg.get("id", i),
+                    "start": seg.get("start", 0),
+                    "end": seg.get("end", 0),
+                    "text": seg.get("text", "").strip()
+                }
+                for i, seg in enumerate(original_result.get("segments", []))
+            ]
+            
+            result = {
+                "text": original_result["text"].strip(),
+                "language": original_result.get("language", "unknown"),
+                "segments": original_segments,
+                "has_translation": False
             }
+            
+            # Если нужен перевод - делаем дополнительный вызов
+            if translate_to_english:
+                print(f"[TRANSLATE] Начало перевода на английский (стандартный Whisper)...")
+                try:
+                    translate_result = whisper_model.transcribe(
+                        audio_path,
+                        language=language,
+                        task="translate",
+                        beam_size=beam_size,
+                        best_of=best_of
+                    )
+                    print(f"[TRANSLATE] ✓ Перевод завершен")
+                    
+                    translated_segments = [
+                        {
+                            "id": seg.get("id", i),
+                            "start": seg.get("start", 0),
+                            "end": seg.get("end", 0),
+                            "text": seg.get("text", "").strip()
+                        }
+                        for i, seg in enumerate(translate_result.get("segments", []))
+                    ]
+                    
+                    result["translated_text"] = translate_result["text"].strip()
+                    result["translated_language"] = "en"
+                    result["translated_segments"] = translated_segments
+                    result["has_translation"] = True
+                except Exception as e:
+                    print(f"[TRANSLATE] ❌ Ошибка при переводе: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    result["has_translation"] = False
+            
+            return result
     
     def _transcribe_with_diarization(
         self,

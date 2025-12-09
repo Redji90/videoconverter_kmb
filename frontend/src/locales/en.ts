@@ -10,6 +10,7 @@ export const en = {
   generateSubtitles: "Generate subtitles (SRT/VTT)",
   speedMode: "⚡ Speed mode (faster, but less accurate)",
   enableDiarization: "🎭 Speaker diarization (if multiple people)",
+  translateToEnglish: "🌐 Translate to English",
   numSpeakers: "Number of speakers (leave empty for auto-detection):",
   speakerNames: "Speaker names (e.g.: \"Host\", \"Kamila Valieva\"):",
   speakerPlaceholder: "Speaker {num} (optional)",
@@ -36,6 +37,7 @@ export const en = {
   copied: "✓ Copied",
   textBySpeakers: "Text by speakers:",
   segmentsWithTimestamps: "Segments with timestamps:",
-  subtitles: "Subtitles:"
+  subtitles: "Subtitles:",
+  translatedText: "Translation"
 }
 
